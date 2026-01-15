@@ -1,0 +1,32 @@
+scaler.save
+demand_model/
+# Игнорировать папку виртуального окружения Python
+venv/
+env/
+.venv/
+
+# Игнорировать кэш Python
+__pycache__/
+*.pyc
+
+# Игнорировать папки IDE
+.vscode/
+.idea/
+*.swp
+
+# Игнорировать папки зависимостей
+node_modules/
+vendor/
+bower_components/
+
+# Игнорировать логи и временные файлы
+logs/
+tmp/
+temp/
+
+# Игнорировать папки с данными и моделями
+data/
+datasets/
+models/
+uploads/
+downloads/
