@@ -4,8 +4,8 @@ import pandas as pd
 import joblib
 from datasets import load_dataset
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error
 
 # ============================
 # 1. Load dataset
@@ -56,28 +56,37 @@ cat_features = [
     "second_category_id",
     "third_category_id"
 ]
-
 X_cat = df[cat_features].values.astype("float32")
 
 # ============================
 # 6. Hours today
 # ============================
 X_hours = np.stack(df["hours_sale"].values).reshape(-1, 24, 1)
-
 X_num = df[num_features].values
 y = df["mean_tomorrow"].values
 
 # ============================
-# 7. Time split
+# 7. Split by products (70/15/15)
 # ============================
-split_date = df["dt"].quantile(0.8)
-train_idx = df["dt"] <= split_date
-val_idx = df["dt"] > split_date
+unique_products = df["product_id"].unique()
+np.random.shuffle(unique_products)
 
-X_cat_train, X_cat_val = X_cat[train_idx], X_cat[val_idx]
-X_num_train, X_num_val = X_num[train_idx], X_num[val_idx]
-X_hours_train, X_hours_val = X_hours[train_idx], X_hours[val_idx]
-y_train, y_val = y[train_idx], y[val_idx]
+n_train = int(0.7 * len(unique_products))
+n_val = int(0.15 * len(unique_products))
+n_test = len(unique_products) - n_train - n_val
+
+train_products = unique_products[:n_train]
+val_products = unique_products[n_train:n_train+n_val]
+test_products = unique_products[n_train+n_val:]
+
+train_idx = df["product_id"].isin(train_products)
+val_idx = df["product_id"].isin(val_products)
+test_idx = df["product_id"].isin(test_products)
+
+X_cat_train, X_cat_val, X_cat_test = X_cat[train_idx], X_cat[val_idx], X_cat[test_idx]
+X_num_train, X_num_val, X_num_test = X_num[train_idx], X_num[val_idx], X_num[test_idx]
+X_hours_train, X_hours_val, X_hours_test = X_hours[train_idx], X_hours[val_idx], X_hours[test_idx]
+y_train, y_val, y_test = y[train_idx], y[val_idx], y[test_idx]
 
 # ============================
 # 8. Model
@@ -94,17 +103,29 @@ hours_lstm = tf.keras.layers.LSTM(32)(hours_inp)
 x = tf.keras.layers.Concatenate()([cat_dense, num_dense, hours_lstm])
 x = tf.keras.layers.Dense(64, activation="relu")(x)
 x = tf.keras.layers.Dense(32, activation="relu")(x)
-
 output = tf.keras.layers.Dense(1)(x)
 
 model = tf.keras.Model([cat_inp, num_inp, hours_inp], output)
 
+# ============================
+# 9. Custom metrics
+# ============================
+def mape(y_true, y_pred):
+    return tf.reduce_mean(tf.abs((y_true - y_pred) / (y_true + 1e-8))) * 100
+
+def accuracy(y_true, y_pred):
+    # точность как доля прогнозов с ошибкой <10%
+    return tf.reduce_mean(tf.cast(tf.abs(y_true - y_pred) / (y_true + 1e-8) < 0.1, tf.float32))
+
 model.compile(
     optimizer="adam",
     loss="mse",
-    metrics=["mae"]
+    metrics=["mae", mape, accuracy]
 )
 
+# ============================
+# 10. Train
+# ============================
 history = model.fit(
     {"cat": X_cat_train, "num": X_num_train, "hours": X_hours_train},
     y_train,
@@ -118,32 +139,36 @@ history = model.fit(
 
 model.save("demand_model")
 
-# --- MAE ---
-plt.figure()
-plt.plot(history.history["mae"], label="Train MAE")
-plt.plot(history.history["val_mae"], label="Validation MAE")
-plt.xlabel("Epoch")
-plt.ylabel("MAE")
-plt.title("Mean Absolute Error during training")
-plt.legend()
-plt.savefig("mae.png")
+# ============================
+# 11. Plot metrics
+# ============================
+metrics = ["mae", "loss", "mape", "accuracy"]
+for metric in metrics:
+    plt.figure()
+    plt.plot(history.history[metric], label=f"Train {metric}")
+    plt.plot(history.history[f"val_{metric}"], label=f"Val {metric}")
+    plt.xlabel("Epoch")
+    plt.ylabel(metric.upper())
+    plt.title(f"{metric.upper()} during training")
+    plt.legend()
+    plt.savefig(f"{metric}.png")
 
-# --- Loss (MSE) ---
-plt.figure()
-plt.plot(history.history["loss"], label="Train Loss")
-plt.plot(history.history["val_loss"], label="Validation Loss")
-plt.xlabel("Epoch")
-plt.ylabel("MSE")
-plt.title("Loss (MSE) during training")
-plt.legend()
-plt.savefig("loss.png")
-
-test_pred = model.predict({
-    "cat": X_cat_val,
-    "num": X_num_val,
-    "hours": X_hours_val
+# ============================
+# 12. Test evaluation
+# ============================
+y_pred = model.predict({
+    "cat": X_cat_test,
+    "num": X_num_test,
+    "hours": X_hours_test
 })[:, 0]
 
-mae = mean_absolute_error(y_val, test_pred)
+test_mae = mean_absolute_error(y_test, y_pred)
+test_mse = mean_squared_error(y_test, y_pred)
+test_mape = mean_absolute_percentage_error(y_test, y_pred) * 100
 
-print("TEST MAE:", mae)
+test_acc = np.mean(np.abs(y_test - y_pred) / (y_test + 1e-8) < 0.1)
+
+print("TEST MAE:", test_mae)
+print("TEST MSE:", test_mse)
+print("TEST MAPE:", test_mape)
+print("TEST Accuracy (<10% error):", test_acc)
